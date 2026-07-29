@@ -206,6 +206,42 @@ def build_charts(hist: pd.DataFrame, fc: pd.DataFrame) -> list[dict[str, str]]:
     except Exception as exc:  # pragma: no cover
         print(f"기온 차트 실패: {exc}")
 
+    # 1.5) 연간 기온 캘린더 히트맵 (일 평균, GitHub 스타일)
+    try:
+        dts = h["date"].dt.date
+        first = dts.min()
+        start_monday = first - timedelta(days=first.weekday())
+        n_weeks = ((dts.max() - start_monday).days // 7) + 1
+        z = [[float("nan")] * n_weeks for _ in range(7)]  # 행 = 월~일 (0..6)
+        week_starts = [start_monday + timedelta(days=7 * w) for w in range(n_weeks)]
+        for d, t in zip(dts.values, h["t_mean"].values):
+            wi = (d - start_monday).days // 7
+            z[d.weekday()][wi] = t
+        tickvals, ticktext, prev = [], [], None
+        for ws in week_starts:
+            if ws.month != prev:
+                tickvals.append(ws.strftime("%Y-%m-%d"))
+                ticktext.append(f"{ws.month}월")
+                prev = ws.month
+        fig = go.Figure(
+            go.Heatmap(
+                z=z,
+                x=[ws.strftime("%Y-%m-%d") for ws in week_starts],
+                y=["월", "화", "수", "목", "금", "토", "일"],
+                colorscale="Turbo", zmin=-15, zmax=35,
+                colorbar=dict(title="℃"), xgap=2, ygap=2, hoverongaps=False,
+                hovertemplate="%{x}<br>%{y}: %{z:.1f}℃<extra></extra>",
+            )
+        )
+        fig.update_layout(
+            title="연간 기온 캘린더 (일 평균)",
+            xaxis=dict(tickvals=tickvals, ticktext=ticktext),
+            margin=dict(l=10, r=20, t=50, b=20), height=280,
+        )
+        add("기온 캘린더", fig)
+    except Exception as exc:  # pragma: no cover
+        print(f"캘린더 차트 실패: {exc}")
+
     # 2) 일일 강수량
     try:
         fig = go.Figure(go.Bar(x=hd, y=h["precip"], name="강수량", marker_color="#2563eb"))

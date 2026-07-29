@@ -63,15 +63,16 @@ def test_upsert_idempotent_and_accumulates(tmp_path):
 
 def test_build_charts_count_with_and_without_forecast():
     h = hist_df()
-    # 예보 있으면 5개(기온/강수/월별/극값/예보)
+    # 예보 있으면 6개(기온/캘린더/강수/월별/극값/예보)
     charts = build_charts(h, forecast_df())
     titles = [c["title"] for c in charts]
+    assert "기온 캘린더" in titles
     assert "향후 7일 예보" in titles
     assert all("plotly-graph-div" in c["html"] for c in charts)
-    # 예보 없으면 4개(예보 차트 제외)
+    # 예보 없으면 5개(예보 차트 제외, 캘린더 포함)
     empty_fc = pd.DataFrame(columns=WEATHER_COLS)
     charts2 = build_charts(h, empty_fc)
-    assert len(charts2) == 4
+    assert len(charts2) == 5
     assert "향후 7일 예보" not in [c["title"] for c in charts2]
 
 
