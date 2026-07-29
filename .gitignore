@@ -1,0 +1,10 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.env
+*.egg-info/
+.pytest_cache/
+
+# index.html 과 data/*.csv 는 GitHub Pages 배포/이력 추적을 위해 커밋합니다.
+# 따라서 여기서 제외하지 마세요.

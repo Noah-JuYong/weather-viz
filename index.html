@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>일일 박스오피스 리포트</title>
+  <script src="https://cdn.plot.ly/plotly-2.32.0.min.js" charset="utf-8"></script>
+  <style>
+    :root {
+      --bg: #f5f6fa;
+      --card: #ffffff;
+      --ink: #1f2330;
+      --muted: #6b7280;
+      --accent: #4f46e5;
+      --border: #e6e8ef;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Apple SD Gothic Neo",
+        "Noto Sans KR", Roboto, Helvetica, Arial, sans-serif;
+      background: var(--bg);
+      color: var(--ink);
+      line-height: 1.5;
+    }
+    .wrap { max-width: 1080px; margin: 0 auto; padding: 32px 20px 64px; }
+    header h1 { margin: 0 0 4px; font-size: 28px; }
+    header .sub { color: var(--muted); font-size: 14px; }
+    .kpis {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 14px;
+      margin: 24px 0;
+    }
+    .kpi {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 18px 18px;
+    }
+    .kpi .label { font-size: 12px; color: var(--muted); letter-spacing: 0.02em; }
+    .kpi .value { font-size: 22px; font-weight: 700; margin-top: 6px; word-break: keep-all; }
+    .chart {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 20px;
+      margin-bottom: 18px;
+    }
+    .chart h2 { margin: 0 0 12px; font-size: 17px; font-weight: 600; }
+    .empty {
+      background: var(--card);
+      border: 1px dashed var(--border);
+      border-radius: 14px;
+      padding: 48px 20px;
+      text-align: center;
+      color: var(--muted);
+      margin-top: 24px;
+    }
+    footer { margin-top: 32px; font-size: 12px; color: var(--muted); }
+    footer a { color: var(--accent); text-decoration: none; }
+    @media (max-width: 720px) {
+      .kpis { grid-template-columns: repeat(2, 1fr); }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <h1>🎬 일일 박스오피스 리포트</h1>
+      <div class="sub">업데이트: — · 자동 생성: 2026-07-29 14:42 KST</div>
+    </header>
+
+    
+      <div class="empty">
+        아직 집계된 데이터가 없습니다.<br />
+        데이터가 누적되면 차트가 표시됩니다.
+      </div>
+    
+
+    <footer>
+      데이터 출처:
+      <a href="https://www.kobis.or.kr/kobisopenapi/" target="_blank" rel="noopener">영화진흥위원회 KOBIS OpenAPI</a>
+      · 본 페이지는 자동 생성되었습니다.
+    </footer>
+  </div>
+</body>
+</html>
