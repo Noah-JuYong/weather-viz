@@ -1,15 +1,17 @@
-"""서울 일일 날씨 시각화 파이프라인 본체.
+"""다도시 일일 날씨 시각화 파이프라인 본체.
 
 전체 파이프라인에서 수집(fetch.py) 이후 구간을 담당한다:
-  1. 누적 저장  — data/weather.csv (일별 기온/강수/풍속)
-  2. 분석      — pandas로 추이/월별/극값(폭염·열대야·한파) 집계
-  3. 렌더링    — plotly 차트 + Jinja 템플릿으로 index.html 생성
+  1. 누적 저장  — data/<slug>.csv (도시별 일별 관측치)
+  2. 예보 통합 — 매 실행마다 단기 예보를 실시간 수집해 관측 추이에 이어붙임
+  3. 분석      — 기온 밴드(최고/최저) + 7일 이동평균 + 폭염/한파 기준선,
+                 강수량, 월별 통계, 극값 일수, 향후 7일 예보 차트
+  4. 렌더링    — plotly + Jinja 템플릿으로 도시별 정적 페이지 생성
 
-데이터 소스(Open-Meteo)는 키/가입 불필요. fetch 이후 구간은 네트워크 없이도
+데이터 소스(Open-Meteo)는 키/가입 불필요. 분석/렌더링은 네트워크 없이
 데이터프레임 단위로 검증할 수 있도록 분리했다.
 
 실행:
-  python pipeline.py                  # 최근 1년(어제 기준) 갱신
+  python pipeline.py                  # 모든 도시, 최근 1년(어제 기준) 갱신
   python pipeline.py --days 90        # 최근 90일
   python pipeline.py --backfill 2025-01-01 2025-12-31
 """
@@ -36,6 +38,14 @@ COLDWAVE_C = -12.0  # 한파: 일 최저기온 <= -12℃
 
 WEATHER_COLS = ["date", "t_max", "t_min", "t_mean", "precip", "wind_max"]
 
+# 도시 목록. INDEX_SLUG 에 해당하는 도시가 index.html 이 된다.
+INDEX_SLUG = "seoul"
+CITIES: list[dict[str, Any]] = [
+    {"name": "서울", "slug": "seoul", "lat": 37.5665, "lon": 126.9780},
+    {"name": "부산", "slug": "busan", "lat": 35.1796, "lon": 129.0756},
+    {"name": "제주", "slug": "jeju", "lat": 33.4996, "lon": 126.5312},
+]
+
 
 # --------------------------------------------------------------------------- #
 # 날짜 헬퍼
@@ -50,8 +60,12 @@ def _shift(iso: str, days: int) -> str:
     ).strftime("%Y-%m-%d")
 
 
+def _as_dates(s: pd.Series) -> pd.Series:
+    return pd.to_datetime(s)
+
+
 # --------------------------------------------------------------------------- #
-# 누적 저장
+# 누적 저장 (관측치)
 # --------------------------------------------------------------------------- #
 def load_weather(path: Path) -> pd.DataFrame:
     if not path.exists():
@@ -67,7 +81,6 @@ def save_weather(path: Path, df: pd.DataFrame) -> None:
 
 
 def to_weather_rows(daily: dict[str, list[Any]]) -> list[dict[str, Any]]:
-    """Open-Meteo daily 응답 → 행 리스트."""
     rows = []
     for i, d in enumerate(daily["time"]):
         rows.append(
@@ -84,7 +97,6 @@ def to_weather_rows(daily: dict[str, list[Any]]) -> list[dict[str, Any]]:
 
 
 def upsert_weather(path: Path, rows: list[dict[str, Any]]) -> pd.DataFrame:
-    """행들을 date 키로 upsert(같은 날은 최신값으로 덮어쓰기)."""
     new = pd.DataFrame(rows, columns=WEATHER_COLS)
     new["date"] = pd.to_datetime(new["date"])
     df = load_weather(path)
@@ -97,56 +109,98 @@ def upsert_weather(path: Path, rows: list[dict[str, Any]]) -> pd.DataFrame:
     return df
 
 
+def refresh_history(path: Path, start: str, end: str, lat: float, lon: float) -> None:
+    daily = fetch.get_daily_weather(start, end, lat=lat, lon=lon)
+    upsert_weather(path, to_weather_rows(daily))
+    print(f"  관측: {start}~{end} → {len(daily['time'])}일 upsert")
+
+
+def forecast_df(lat: float, lon: float, *, after: str | None = None) -> pd.DataFrame:
+    """단기 예보를 DataFrame으로 반환. ``after``(YYYY-MM-DD) 이후 날짜만 남긴다.
+
+    예보는 실측이 아니므로 누적 파일에 쓰지 않고 매 실행마다 새로 수집한다.
+    """
+    daily = fetch.get_forecast(lat=lat, lon=lon)
+    df = pd.DataFrame(to_weather_rows(daily), columns=WEATHER_COLS)
+    df["date"] = pd.to_datetime(df["date"])
+    if after is not None:
+        after_dt = pd.to_datetime(after)
+        df = df[df["date"] > after_dt]
+    return df.reset_index(drop=True)
+
+
 # --------------------------------------------------------------------------- #
 # 분석 & 차트
 # --------------------------------------------------------------------------- #
-def _safe_num(s: pd.Series) -> pd.Series:
+def _num(s: pd.Series) -> pd.Series:
     return pd.to_numeric(s, errors="coerce")
 
 
-def build_charts(df: pd.DataFrame) -> list[dict[str, str]]:
+def _datestr(s: pd.Series) -> list[str]:
+    return s.dt.strftime("%Y-%m-%d").tolist()
+
+
+def build_charts(hist: pd.DataFrame, fc: pd.DataFrame) -> list[dict[str, str]]:
     charts: list[dict[str, str]] = []
-    if df.empty:
+    if hist.empty:
         return charts
-    d = df.copy()
-    d["t_max"] = _safe_num(d["t_max"])
-    d["t_min"] = _safe_num(d["t_min"])
-    d["t_mean"] = _safe_num(d["t_mean"])
-    d["precip"] = _safe_num(d["precip"])
-    dates = d["date"].dt.strftime("%Y-%m-%d")
+
+    h = hist.copy()
+    for c in ["t_max", "t_min", "t_mean", "precip"]:
+        h[c] = _num(h[c])
+    hd = _datestr(h["date"])
 
     def add(title: str, fig: go.Figure) -> None:
-        charts.append(
-            {"title": title, "html": fig.to_html(full_html=False, include_plotlyjs=False)}
-        )
+        charts.append({"title": title, "html": fig.to_html(full_html=False, include_plotlyjs=False)})
 
-    # 1) 일일 기온 밴드(최고~최저) + 평균 기온선
+    # 1) 기온 추이: 관측 밴드 + 7일 이동평균 + 예보(점선) + 기준선
     try:
         fig = go.Figure()
         fig.add_trace(
             go.Scatter(
-                x=dates, y=d["t_min"], name="최저기온",
+                x=hd, y=h["t_min"], name="최저(관측)",
                 line=dict(color="rgba(0,0,0,0)"), hovertemplate="최저 %{y}℃<extra></extra>",
             )
         )
         fig.add_trace(
             go.Scatter(
-                x=dates, y=d["t_max"], name="최고기온", fill="tonexty",
-                fillcolor="rgba(239,68,68,0.18)", line=dict(color="#ef4444"),
+                x=hd, y=h["t_max"], name="최고(관측)", fill="tonexty",
+                fillcolor="rgba(239,68,68,0.16)", line=dict(color="#ef4444"),
                 hovertemplate="최고 %{y}℃<extra></extra>",
             )
         )
+        ma = h["t_mean"].rolling(7, min_periods=1).mean()
         fig.add_trace(
             go.Scatter(
-                x=dates, y=d["t_mean"], name="평균기온", line=dict(color="#0ea5e9", width=1.5),
-                hovertemplate="평균 %{y}℃<extra></extra>",
+                x=hd, y=ma, name="평균 7일 이동평균", line=dict(color="#0ea5e9", width=2),
+                hovertemplate="7일평균 %{y:.1f}℃<extra></extra>",
             )
         )
+        if not fc.empty:
+            f = fc.copy()
+            for c in ["t_max", "t_min"]:
+                f[c] = _num(f[c])
+            fd = _datestr(f["date"])
+            fig.add_trace(
+                go.Scatter(
+                    x=fd, y=f["t_max"], name="최고(예보)", line=dict(color="#7c3aed", dash="dash"),
+                    hovertemplate="예보 최고 %{y}℃<extra></extra>",
+                )
+            )
+            fig.add_trace(
+                go.Scatter(
+                    x=fd, y=f["t_min"], name="최저(예보)", line=dict(color="#7c3aed", dash="dot"),
+                    hovertemplate="예보 최저 %{y}℃<extra></extra>",
+                )
+            )
+        fig.add_hline(y=HEATWAVE_C, line=dict(color="#dc2626", dash="dash", width=1),
+                      annotation_text=f"폭염 {HEATWAVE_C:.0f}℃", annotation_position="top left")
+        fig.add_hline(y=COLDWAVE_C, line=dict(color="#2563eb", dash="dash", width=1),
+                      annotation_text=f"한파 {COLDWAVE_C:.0f}℃", annotation_position="bottom left")
         fig.update_layout(
-            title="일일 기온 (최고·평균·최저)",
-            yaxis_title="기온(℃)", hovermode="x unified",
-            legend=dict(orientation="h", y=-0.15),
-            margin=dict(l=10, r=20, t=50, b=50), height=420,
+            title="일일 기온 (관측 + 예보)", yaxis_title="기온(℃)", hovermode="x unified",
+            legend=dict(orientation="h", y=-0.18),
+            margin=dict(l=10, r=20, t=50, b=60), height=440,
         )
         add("기온 추이", fig)
     except Exception as exc:  # pragma: no cover
@@ -154,48 +208,34 @@ def build_charts(df: pd.DataFrame) -> list[dict[str, str]]:
 
     # 2) 일일 강수량
     try:
-        fig = go.Figure(
-            go.Bar(x=dates, y=d["precip"], name="강수량", marker_color="#2563eb")
-        )
-        fig.update_layout(
-            title="일일 강수량", yaxis_title="강수량(mm)",
-            margin=dict(l=10, r=20, t=50, b=20), height=360,
-        )
+        fig = go.Figure(go.Bar(x=hd, y=h["precip"], name="강수량", marker_color="#2563eb"))
+        fig.update_layout(title="일일 강수량", yaxis_title="강수량(mm)", margin=dict(l=10, r=20, t=50, b=20), height=360)
         add("강수량", fig)
     except Exception as exc:  # pragma: no cover
         print(f"강수 차트 실패: {exc}")
 
-    # 3) 월별 통계 (평균 최고기온 / 강수합)
+    # 3) 월별 통계
     try:
-        d["ym"] = d["date"].dt.strftime("%Y-%m")
-        monthly = d.groupby("ym").agg(평균최고기온=("t_max", "mean"), 강수합=("precip", "sum"))
+        m = h.copy()
+        m["ym"] = m["date"].dt.strftime("%Y-%m")
+        monthly = m.groupby("ym").agg(평균최고기온=("t_max", "mean"), 강수합=("precip", "sum"))
         fig = make_subplots(
             rows=2, cols=1, shared_xaxes=False,
-            subplot_titles=("월별 평균 최고기온(℃)", "월별 강수합(mm)"),
-            vertical_spacing=0.16,
+            subplot_titles=("월별 평균 최고기온(℃)", "월별 강수합(mm)"), vertical_spacing=0.16,
         )
-        fig.add_trace(
-            go.Bar(x=monthly.index, y=monthly["평균최고기온"], marker_color="#f97316", name="평균 최고기온"),
-            1, 1,
-        )
-        fig.add_trace(
-            go.Bar(x=monthly.index, y=monthly["강수합"], marker_color="#0ea5e9", name="강수합"),
-            2, 1,
-        )
-        fig.update_layout(
-            title="월별 통계", showlegend=False,
-            margin=dict(l=10, r=20, t=50, b=30), height=480,
-        )
+        fig.add_trace(go.Bar(x=monthly.index, y=monthly["평균최고기온"], marker_color="#f97316", name="평균 최고기온"), 1, 1)
+        fig.add_trace(go.Bar(x=monthly.index, y=monthly["강수합"], marker_color="#0ea5e9", name="강수합"), 2, 1)
+        fig.update_layout(title="월별 통계", showlegend=False, margin=dict(l=10, r=20, t=50, b=30), height=480)
         add("월별 통계", fig)
     except Exception as exc:  # pragma: no cover
         print(f"월별 차트 실패: {exc}")
 
-    # 4) 극값 일수 (폭염/열대야/한파)
+    # 4) 극값 일수
     try:
         extremes = {
-            "폭염일수": int((d["t_max"] >= HEATWAVE_C).sum()),
-            "열대야일수": int((d["t_min"] >= TROPICAL_C).sum()),
-            "한파일수": int((d["t_min"] <= COLDWAVE_C).sum()),
+            "폭염일수": int((h["t_max"] >= HEATWAVE_C).sum()),
+            "열대야일수": int((h["t_min"] >= TROPICAL_C).sum()),
+            "한파일수": int((h["t_min"] <= COLDWAVE_C).sum()),
         }
         fig = go.Figure(
             go.Bar(
@@ -204,27 +244,52 @@ def build_charts(df: pd.DataFrame) -> list[dict[str, str]]:
                 text=list(extremes.values()), textposition="outside",
             )
         )
-        fig.update_layout(
-            title="극값 일수 (관측 기간 합계)",
-            yaxis_title="일수", margin=dict(l=10, r=20, t=50, b=30), height=360,
-        )
+        fig.update_layout(title="극값 일수 (관측 기간 합계)", yaxis_title="일수", margin=dict(l=10, r=20, t=50, b=30), height=360)
         add("극값 일수", fig)
     except Exception as exc:  # pragma: no cover
         print(f"극값 차트 실패: {exc}")
 
+    # 5) 향후 7일 예보
+    if not fc.empty:
+        try:
+            f = fc.copy()
+            for c in ["t_max", "t_min", "precip"]:
+                f[c] = _num(f[c])
+            fd = _datestr(f["date"])
+            fig = make_subplots(specs=[[{"secondary_y": True}]])
+            fig.add_trace(go.Bar(x=fd, y=f["t_max"], name="최고기온", marker_color="#f97316"), secondary_y=False)
+            fig.add_trace(go.Scatter(x=fd, y=f["t_min"], name="최저기온", mode="lines+markers", line=dict(color="#2563eb")), secondary_y=False)
+            fig.add_trace(go.Bar(x=fd, y=f["precip"], name="강수량", marker_color="rgba(37,99,235,0.25)"), secondary_y=True)
+            fig.update_layout(title="향후 예보 (최고·최저 기온 / 강수량)", barmode="group", margin=dict(l=10, r=20, t=50, b=30), height=380)
+            fig.update_yaxes(title_text="기온(℃)", secondary_y=False)
+            fig.update_yaxes(title_text="강수량(mm)", secondary_y=True)
+            add("향후 7일 예보", fig)
+        except Exception as exc:  # pragma: no cover
+            print(f"예보 차트 실패: {exc}")
+
     return charts
 
 
-def build_context(df: pd.DataFrame) -> dict[str, Any]:
+def build_context(hist: pd.DataFrame, fc: pd.DataFrame, city: dict[str, Any]) -> dict[str, Any]:
     generated_at = datetime.now(KST).strftime("%Y-%m-%d %H:%M KST")
-    if df.empty:
-        return {
-            "updated_at": "—", "generated_at": generated_at,
-            "kpis": [], "charts": [], "empty": True,
+    nav = [
+        {
+            "name": c["name"],
+            "href": "index.html" if c["slug"] == INDEX_SLUG else f"{c['slug']}.html",
+            "active": c["slug"] == city["slug"],
         }
-    d = df.copy()
+        for c in CITIES
+    ]
+    base = {
+        "city_name": city["name"],
+        "generated_at": generated_at,
+        "nav": nav,
+    }
+    if hist.empty:
+        return {**base, "updated_at": "—", "kpis": [], "charts": [], "empty": True}
+    d = hist.copy()
     for c in ["t_max", "t_min", "t_mean", "precip"]:
-        d[c] = _safe_num(d[c])
+        d[c] = _num(d[c])
     latest = d["date"].max()
     latest_row = d[d["date"] == latest].iloc[0]
     days = (d["date"].max() - d["date"].min()).days + 1
@@ -235,10 +300,10 @@ def build_context(df: pd.DataFrame) -> dict[str, Any]:
         {"label": "관측기간 폭염일수", "value": f"{int((d['t_max'] >= HEATWAVE_C).sum())}일"},
     ]
     return {
+        **base,
         "updated_at": latest.strftime("%Y-%m-%d"),
-        "generated_at": generated_at,
         "kpis": kpis,
-        "charts": build_charts(d),
+        "charts": build_charts(d, fc),
         "empty": False,
     }
 
@@ -247,10 +312,7 @@ def build_context(df: pd.DataFrame) -> dict[str, Any]:
 # 렌더링
 # --------------------------------------------------------------------------- #
 def render(context: dict[str, Any], template_path: Path, out_path: Path) -> None:
-    env = Environment(
-        loader=FileSystemLoader(template_path.parent),
-        autoescape=select_autoescape(["html"]),
-    )
+    env = Environment(loader=FileSystemLoader(template_path.parent), autoescape=select_autoescape(["html"]))
     tmpl = env.get_template(template_path.name)
     out_path.write_text(tmpl.render(**context), encoding="utf-8")
 
@@ -258,26 +320,20 @@ def render(context: dict[str, Any], template_path: Path, out_path: Path) -> None
 # --------------------------------------------------------------------------- #
 # 실행
 # --------------------------------------------------------------------------- #
-def refresh(path: Path, start: str, end: str) -> None:
-    daily = fetch.get_daily_weather(start, end)
-    rows = to_weather_rows(daily)
-    upsert_weather(path, rows)
-    print(f"수집: {start}~{end} → {len(rows)}일 upsert 완료")
+def _page_path(root: Path, slug: str) -> Path:
+    name = "index.html" if slug == INDEX_SLUG else f"{slug}.html"
+    return root / name
 
 
 def main(argv: list[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(description="서울 일일 날씨 시각화 파이프라인")
+    parser = argparse.ArgumentParser(description="다도시 일일 날씨 시각화 파이프라인")
     parser.add_argument("--days", type=int, default=365, help="최근 N일 (기본 365)")
-    parser.add_argument(
-        "--backfill", nargs=2, metavar=("START", "END"),
-        help="START~END(YYYY-MM-DD, 포함) 구간 백필",
-    )
+    parser.add_argument("--backfill", nargs=2, metavar=("START", "END"), help="START~END(YYYY-MM-DD) 구간 백필")
     args = parser.parse_args(argv)
 
     root = Path(__file__).resolve().parent
-    data_path = root / "data" / "weather.csv"
+    data_dir = root / "data"
     template_path = root / "template.html"
-    out_path = root / "index.html"
 
     end = kst_yesterday()
     if args.backfill:
@@ -285,13 +341,23 @@ def main(argv: list[str] | None = None) -> None:
     else:
         start = _shift(end, -(args.days - 1))
 
-    refresh(data_path, start, end)
-
-    df = load_weather(data_path)
-    context = build_context(df)
-    render(context, template_path, out_path)
-    days = (df["date"].max() - df["date"].min()).days + 1 if not df.empty else 0
-    print(f"완료: {out_path.name} 생성 (누적 {len(df)}일 / 기간 {days}일)")
+    for city in CITIES:
+        print(f"[{city['name']}]")
+        csv_path = data_dir / f"{city['slug']}.csv"
+        refresh_history(csv_path, start, end, city["lat"], city["lon"])
+        hist = load_weather(csv_path)
+        after = hist["date"].max().strftime("%Y-%m-%d") if not hist.empty else None
+        try:
+            fc = forecast_df(city["lat"], city["lon"], after=after)
+            print(f"  예보: {len(fc)}일")
+        except Exception as exc:
+            print(f"  예보 수집 실패(건너뜀): {exc}")
+            fc = pd.DataFrame(columns=WEATHER_COLS)
+        ctx = build_context(hist, fc, city)
+        out = _page_path(root, city["slug"])
+        render(ctx, template_path, out)
+        days = (hist["date"].max() - hist["date"].min()).days + 1 if not hist.empty else 0
+        print(f"  → {out.name} (누적 {len(hist)}일 / 기간 {days}일)")
 
 
 if __name__ == "__main__":

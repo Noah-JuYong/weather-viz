@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>서울 날씨 리포트</title>
+  <title>{{ city_name }} 날씨 리포트</title>
   <script src="https://cdn.plot.ly/plotly-2.32.0.min.js" charset="utf-8"></script>
   <style>
     :root {
@@ -26,50 +26,42 @@
     .wrap { max-width: 1080px; margin: 0 auto; padding: 32px 20px 64px; }
     header h1 { margin: 0 0 4px; font-size: 28px; }
     header .sub { color: var(--muted); font-size: 14px; }
-    .kpis {
-      display: grid;
-      grid-template-columns: repeat(4, 1fr);
-      gap: 14px;
-      margin: 24px 0;
-    }
-    .kpi {
+    .tabs { display: flex; gap: 8px; margin: 18px 0 4px; flex-wrap: wrap; }
+    .tabs a {
+      padding: 8px 16px;
+      border-radius: 999px;
+      text-decoration: none;
+      font-size: 14px;
+      font-weight: 600;
       background: var(--card);
       border: 1px solid var(--border);
-      border-radius: 14px;
-      padding: 18px;
+      color: var(--muted);
     }
+    .tabs a.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+    .kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin: 20px 0; }
+    .kpi { background: var(--card); border: 1px solid var(--border); border-radius: 14px; padding: 18px; }
     .kpi .label { font-size: 12px; color: var(--muted); }
     .kpi .value { font-size: 20px; font-weight: 700; margin-top: 6px; word-break: keep-all; }
-    .chart {
-      background: var(--card);
-      border: 1px solid var(--border);
-      border-radius: 14px;
-      padding: 20px;
-      margin-bottom: 18px;
-    }
+    .chart { background: var(--card); border: 1px solid var(--border); border-radius: 14px; padding: 20px; margin-bottom: 18px; }
     .chart h2 { margin: 0 0 12px; font-size: 17px; font-weight: 600; }
-    .empty {
-      background: var(--card);
-      border: 1px dashed var(--border);
-      border-radius: 14px;
-      padding: 48px 20px;
-      text-align: center;
-      color: var(--muted);
-      margin-top: 24px;
-    }
+    .empty { background: var(--card); border: 1px dashed var(--border); border-radius: 14px; padding: 48px 20px; text-align: center; color: var(--muted); margin-top: 24px; }
     footer { margin-top: 32px; font-size: 12px; color: var(--muted); }
     footer a { color: var(--accent); text-decoration: none; }
-    @media (max-width: 720px) {
-      .kpis { grid-template-columns: repeat(2, 1fr); }
-    }
+    @media (max-width: 720px) { .kpis { grid-template-columns: repeat(2, 1fr); } }
   </style>
 </head>
 <body>
   <div class="wrap">
     <header>
-      <h1>🌤️ 서울 날씨 리포트</h1>
+      <h1>🌤️ {{ city_name }} 날씨 리포트</h1>
       <div class="sub">최근 관측: {{ updated_at }} · 자동 생성: {{ generated_at }}</div>
     </header>
+
+    <nav class="tabs">
+      {% for t in nav %}
+        <a href="{{ t.href }}" class="{% if t.active %}active{% endif %}">{{ t.name }}</a>
+      {% endfor %}
+    </nav>
 
     {% if empty %}
       <div class="empty">
@@ -96,8 +88,8 @@
 
     <footer>
       데이터 출처:
-      <a href="https://open-meteo.com/" target="_blank" rel="noopener">Open-Meteo Archive API</a>
-      (서울 위도 37.57, 경도 126.98) · 본 페이지는 자동 생성되었습니다.
+      <a href="https://open-meteo.com/" target="_blank" rel="noopener">Open-Meteo</a>
+      (과거 관측: Archive API / 향후 예보: Forecast API) · 본 페이지는 자동 생성되었습니다.
     </footer>
   </div>
 </body>
