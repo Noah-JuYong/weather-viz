@@ -1,8 +1,8 @@
-name: Daily box office update
+name: Daily weather update
 
 on:
   schedule:
-    # UTC 00:00 = KST 09:00 (전날 데이터가 익일 오전에 공개됨)
+    # UTC 00:00 = KST 09:00
     - cron: '0 0 * * *'
   workflow_dispatch:
 
@@ -29,9 +29,7 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Fetch + analyze + render
-        run: python pipeline.py
-        env:
-          KOBIS_KEY: ${{ secrets.KOBIS_KEY }}
+        run: python pipeline.py --days 365
 
       - name: Commit & push changes
         run: |
@@ -41,6 +39,6 @@ jobs:
           if git diff --cached --quiet; then
             echo "no changes"
           else
-            git commit -m "chore: daily box office update ($(date -u +%Y-%m-%d))"
+            git commit -m "chore: daily weather update ($(date -u +%Y-%m-%d))"
             git push
           fi

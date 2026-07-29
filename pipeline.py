@@ -1,25 +1,24 @@
-"""박스오피스 시각화 파이프라인 본체.
+"""서울 일일 날씨 시각화 파이프라인 본체.
 
 전체 파이프라인에서 수집(fetch.py) 이후 구간을 담당한다:
-  1. 누적 저장  — data/boxoffice.csv(팩트), data/movies.csv(영화 차원표)
-  2. 분석      — pandas로 일일/누적/장르·국가 비중 집계
-  3. 렌더링    — plotly 차드 + Jinja 템플릿으로 index.html 생성
+  1. 누적 저장  — data/weather.csv (일별 기온/강수/풍속)
+  2. 분석      — pandas로 추이/월별/극값(폭염·열대야·한파) 집계
+  3. 렌더링    — plotly 차트 + Jinja 템플릿으로 index.html 생성
 
-인접 책임: KOBIS API 호출 자체는 fetch.py가 담당. 이 모듈은 네트워크 없이도
-분석/렌더링을 검증할 수 있도록 데이터프레임 단위로 동작한다.
+데이터 소스(Open-Meteo)는 키/가입 불필요. fetch 이후 구간은 네트워크 없이도
+데이터프레임 단위로 검증할 수 있도록 분리했다.
 
 실행:
-  python pipeline.py                 # KST 어제 일자 1건 갱신
-  python pipeline.py --date 20240101 # 특정 일자
-  python pipeline.py --backfill 20240101 20240131  # 구간 백필
+  python pipeline.py                  # 최근 1년(어제 기준) 갱신
+  python pipeline.py --days 90        # 최근 90일
+  python pipeline.py --backfill 2025-01-01 2025-12-31
 """
 from __future__ import annotations
 
 import argparse
-import time
-from datetime import date, datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -30,268 +29,216 @@ import fetch
 
 KST = timezone(timedelta(hours=9))
 
-FACT_COLS = ["date", "rank", "movieCd", "audiCnt", "audiAcc", "salesAcc", "scrnCnt", "showCnt"]
-DIM_COLS = ["movieCd", "movieNm", "prdtYear", "openDt", "nation", "genre"]
+# 기상청 기준 임계값
+HEATWAVE_C = 33.0  # 폭염: 일 최고기온 >= 33℃
+TROPICAL_C = 25.0  # 열대야: 일 최저기온 >= 25℃
+COLDWAVE_C = -12.0  # 한파: 일 최저기온 <= -12℃
+
+WEATHER_COLS = ["date", "t_max", "t_min", "t_mean", "precip", "wind_max"]
 
 
 # --------------------------------------------------------------------------- #
 # 날짜 헬퍼
 # --------------------------------------------------------------------------- #
-def _to_compact(d: date) -> str:
-    return d.strftime("%Y%m%d")
+def kst_yesterday() -> str:
+    return (datetime.now(KST).date() - timedelta(days=1)).strftime("%Y-%m-%d")
 
 
-def _to_iso(d: date) -> str:
-    return d.strftime("%Y-%m-%d")
-
-
-def _parse_compact(s: str) -> date:
-    return datetime.strptime(s, "%Y%m%d").date()
-
-
-def _compact_to_iso(s: str) -> str:
-    """영화정보 openDt(YYYYMMDD) -> YYYY-MM-DD. 빈 값/불량은 그대로."""
-    if not s or len(s) != 8 or not s.isdigit():
-        return s
-    return f"{s[:4]}-{s[4:6]}-{s[6:]}"
-
-
-def kst_yesterday() -> date:
-    return datetime.now(KST).date() - timedelta(days=1)
+def _shift(iso: str, days: int) -> str:
+    return (
+        datetime.strptime(iso, "%Y-%m-%d").date() + timedelta(days=days)
+    ).strftime("%Y-%m-%d")
 
 
 # --------------------------------------------------------------------------- #
-# 팩트(일일 박스오피스) 저장
+# 누적 저장
 # --------------------------------------------------------------------------- #
-def load_fact(path: Path) -> pd.DataFrame:
+def load_weather(path: Path) -> pd.DataFrame:
     if not path.exists():
-        return pd.DataFrame(columns=FACT_COLS)
-    return pd.read_csv(path, dtype={"movieCd": str})
+        return pd.DataFrame(columns=WEATHER_COLS)
+    return pd.read_csv(path, parse_dates=["date"])
 
 
-def save_fact(path: Path, df: pd.DataFrame) -> None:
+def save_weather(path: Path, df: pd.DataFrame) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    df[FACT_COLS].to_csv(path, index=False)
+    out = df[WEATHER_COLS].copy()
+    out["date"] = pd.to_datetime(out["date"]).dt.strftime("%Y-%m-%d")
+    out.to_csv(path, index=False)
 
 
-def to_fact_rows(day_iso: str, records: list[dict[str, Any]]) -> pd.DataFrame:
+def to_weather_rows(daily: dict[str, list[Any]]) -> list[dict[str, Any]]:
+    """Open-Meteo daily 응답 → 행 리스트."""
     rows = []
-    for r in records:
+    for i, d in enumerate(daily["time"]):
         rows.append(
             {
-                "date": day_iso,
-                "rank": int(r["rank"]),
-                "movieCd": str(r["movieCd"]),
-                "audiCnt": int(r["audiCnt"]),
-                "audiAcc": int(r["audiAcc"]),
-                "salesAcc": int(r.get("salesAcc") or 0),
-                "scrnCnt": int(r.get("scrnCnt") or 0),
-                "showCnt": int(r.get("showCnt") or 0),
+                "date": d,
+                "t_max": daily["temperature_2m_max"][i],
+                "t_min": daily["temperature_2m_min"][i],
+                "t_mean": daily["temperature_2m_mean"][i],
+                "precip": daily["precipitation_sum"][i],
+                "wind_max": daily["wind_speed_10m_max"][i],
             }
         )
-    return pd.DataFrame(rows, columns=FACT_COLS)
+    return rows
 
 
-def append_fact(path: Path, day_iso: str, records: list[dict[str, Any]]) -> pd.DataFrame:
-    """``day_iso`` 하루치를 upsert. 같은 날 다시 돌리면 덮어쓴다(멱등)."""
-    df = load_fact(path)
-    new = to_fact_rows(day_iso, records)
+def upsert_weather(path: Path, rows: list[dict[str, Any]]) -> pd.DataFrame:
+    """행들을 date 키로 upsert(같은 날은 최신값으로 덮어쓰기)."""
+    new = pd.DataFrame(rows, columns=WEATHER_COLS)
+    new["date"] = pd.to_datetime(new["date"])
+    df = load_weather(path)
     if not df.empty:
-        df = df[df["date"] != day_iso]
+        keep = set(new["date"].dt.strftime("%Y-%m-%d"))
+        df = df[~df["date"].dt.strftime("%Y-%m-%d").isin(keep)]
     df = pd.concat([df, new], ignore_index=True)
-    df = df.sort_values(["date", "rank"]).reset_index(drop=True)
-    save_fact(path, df)
+    df = df.sort_values("date").reset_index(drop=True)
+    save_weather(path, df)
     return df
-
-
-# --------------------------------------------------------------------------- #
-# 차원표(영화 마스터) 저장
-# --------------------------------------------------------------------------- #
-def load_dim(path: Path) -> pd.DataFrame:
-    if not path.exists():
-        return pd.DataFrame(columns=DIM_COLS)
-    return pd.read_csv(path, dtype={"movieCd": str})
-
-
-def save_dim(path: Path, df: pd.DataFrame) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    df[DIM_COLS].to_csv(path, index=False)
-
-
-def to_dim_row(info: dict[str, Any]) -> dict[str, Any]:
-    nations = info.get("nations") or []
-    genres = info.get("genres") or []
-    return {
-        "movieCd": str(info.get("movieCd", "")),
-        "movieNm": info.get("movieNm", ""),
-        "prdtYear": info.get("prdtYear", ""),
-        "openDt": _compact_to_iso(info.get("openDt", "")),
-        "nation": nations[0].get("nationNm", "") if nations else "",
-        "genre": genres[0].get("genreNm", "") if genres else "",
-    }
-
-
-def ensure_movies(
-    path: Path,
-    movie_cds: list[str],
-    *,
-    fetcher: Callable[..., dict[str, Any] | None] = fetch.get_movie_info,
-    session: Any = None,
-    sleep: float = 0.15,
-) -> pd.DataFrame:
-    """차원표에 없는 movieCd만 상세정보를 채워 넣는다(중복 호출 방지)."""
-    dim = load_dim(path)
-    have = set(dim["movieCd"]) if not dim.empty else set()
-    rows = []
-    for cd in dict.fromkeys(movie_cds):  # 순서 유지 중복 제거
-        if cd in have:
-            continue
-        try:
-            info = fetcher(cd, session=session) if session is not None else fetcher(cd)
-        except Exception as exc:  # 개별 영화 실패가 전체를 막지 않도록
-            print(f"  movieCd {cd} 상세정보 조회 실패: {exc}")
-            continue
-        if info:
-            rows.append(to_dim_row(info))
-            have.add(cd)
-            time.sleep(sleep)
-    if rows:
-        dim = pd.concat([dim, pd.DataFrame(rows, columns=DIM_COLS)], ignore_index=True)
-        save_dim(path, dim)
-    return dim
 
 
 # --------------------------------------------------------------------------- #
 # 분석 & 차트
 # --------------------------------------------------------------------------- #
-def _short(name: str, n: int = 14) -> str:
-    return name if len(name) <= n else name[: n - 1] + "…"
+def _safe_num(s: pd.Series) -> pd.Series:
+    return pd.to_numeric(s, errors="coerce")
 
 
-def _collapse(series: pd.Series, top_n: int = 6) -> pd.Series:
-    """작은 슬라이스를 '기타'로 합친다."""
-    if len(series) <= top_n:
-        return series
-    top = series.nlargest(top_n - 1)
-    etc = series.drop(top.index).sum()
-    top["기타"] = etc
-    return top.sort_values(ascending=False)
-
-
-def _lookup_name(dim: pd.DataFrame, movie_cd: str) -> str:
-    if dim.empty:
-        return movie_cd
-    hit = dim[dim["movieCd"] == movie_cd]
-    return hit.iloc[0]["movieNm"] if not hit.empty else movie_cd
-
-
-def build_charts(fact: pd.DataFrame, dim: pd.DataFrame) -> list[dict[str, str]]:
-    """plotly 차드를 HTML div로 반환. 한 차트 실패해도 나머지는 살린다."""
+def build_charts(df: pd.DataFrame) -> list[dict[str, str]]:
     charts: list[dict[str, str]] = []
-    if fact.empty:
+    if df.empty:
         return charts
+    d = df.copy()
+    d["t_max"] = _safe_num(d["t_max"])
+    d["t_min"] = _safe_num(d["t_min"])
+    d["t_mean"] = _safe_num(d["t_mean"])
+    d["precip"] = _safe_num(d["precip"])
+    dates = d["date"].dt.strftime("%Y-%m-%d")
 
     def add(title: str, fig: go.Figure) -> None:
-        charts.append({"title": title, "html": fig.to_html(full_html=False, include_plotlyjs=False)})
+        charts.append(
+            {"title": title, "html": fig.to_html(full_html=False, include_plotlyjs=False)}
+        )
 
-    latest = fact["date"].max()
-    names = dim.set_index("movieCd")["movieNm"].to_dict() if not dim.empty else {}
-
-    # 1) 최근 일자 TOP10 일일 관객수 (가로 바)
+    # 1) 일일 기온 밴드(최고~최저) + 평균 기온선
     try:
-        snap = fact[fact["date"] == latest].sort_values("rank").copy()
-        snap["label"] = snap["movieCd"].map(names).fillna(snap["movieCd"]).map(_short)
+        fig = go.Figure()
+        fig.add_trace(
+            go.Scatter(
+                x=dates, y=d["t_min"], name="최저기온",
+                line=dict(color="rgba(0,0,0,0)"), hovertemplate="최저 %{y}℃<extra></extra>",
+            )
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=dates, y=d["t_max"], name="최고기온", fill="tonexty",
+                fillcolor="rgba(239,68,68,0.18)", line=dict(color="#ef4444"),
+                hovertemplate="최고 %{y}℃<extra></extra>",
+            )
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=dates, y=d["t_mean"], name="평균기온", line=dict(color="#0ea5e9", width=1.5),
+                hovertemplate="평균 %{y}℃<extra></extra>",
+            )
+        )
+        fig.update_layout(
+            title="일일 기온 (최고·평균·최저)",
+            yaxis_title="기온(℃)", hovermode="x unified",
+            legend=dict(orientation="h", y=-0.15),
+            margin=dict(l=10, r=20, t=50, b=50), height=420,
+        )
+        add("기온 추이", fig)
+    except Exception as exc:  # pragma: no cover
+        print(f"기온 차트 실패: {exc}")
+
+    # 2) 일일 강수량
+    try:
+        fig = go.Figure(
+            go.Bar(x=dates, y=d["precip"], name="강수량", marker_color="#2563eb")
+        )
+        fig.update_layout(
+            title="일일 강수량", yaxis_title="강수량(mm)",
+            margin=dict(l=10, r=20, t=50, b=20), height=360,
+        )
+        add("강수량", fig)
+    except Exception as exc:  # pragma: no cover
+        print(f"강수 차트 실패: {exc}")
+
+    # 3) 월별 통계 (평균 최고기온 / 강수합)
+    try:
+        d["ym"] = d["date"].dt.strftime("%Y-%m")
+        monthly = d.groupby("ym").agg(평균최고기온=("t_max", "mean"), 강수합=("precip", "sum"))
+        fig = make_subplots(
+            rows=2, cols=1, shared_xaxes=False,
+            subplot_titles=("월별 평균 최고기온(℃)", "월별 강수합(mm)"),
+            vertical_spacing=0.16,
+        )
+        fig.add_trace(
+            go.Bar(x=monthly.index, y=monthly["평균최고기온"], marker_color="#f97316", name="평균 최고기온"),
+            1, 1,
+        )
+        fig.add_trace(
+            go.Bar(x=monthly.index, y=monthly["강수합"], marker_color="#0ea5e9", name="강수합"),
+            2, 1,
+        )
+        fig.update_layout(
+            title="월별 통계", showlegend=False,
+            margin=dict(l=10, r=20, t=50, b=30), height=480,
+        )
+        add("월별 통계", fig)
+    except Exception as exc:  # pragma: no cover
+        print(f"월별 차트 실패: {exc}")
+
+    # 4) 극값 일수 (폭염/열대야/한파)
+    try:
+        extremes = {
+            "폭염일수": int((d["t_max"] >= HEATWAVE_C).sum()),
+            "열대야일수": int((d["t_min"] >= TROPICAL_C).sum()),
+            "한파일수": int((d["t_min"] <= COLDWAVE_C).sum()),
+        }
         fig = go.Figure(
             go.Bar(
-                x=snap["audiCnt"].tolist(),
-                y=snap["label"].tolist()[::-1],
-                orientation="h",
-                text=[f"{v:,}명" for v in snap["audiCnt"]],
-                textposition="outside",
-                marker_color="#4f46e5",
+                x=list(extremes.keys()), y=list(extremes.values()),
+                marker_color=["#ef4444", "#f59e0b", "#3b82f6"],
+                text=list(extremes.values()), textposition="outside",
             )
         )
         fig.update_layout(
-            title=f"{latest} 일일 관객수 TOP{len(snap)}",
-            xaxis_title="관객수(명)",
-            margin=dict(l=10, r=30, t=50, b=20),
-            height=420,
+            title="극값 일수 (관측 기간 합계)",
+            yaxis_title="일수", margin=dict(l=10, r=20, t=50, b=30), height=360,
         )
-        add("일일 박스오피스 TOP10", fig)
-    except Exception as exc:  # pragma: no cover - 방어 로직
-        print(f"TOP10 차트 생성 실패: {exc}")
-
-    # 2) TOP 영화 누적 관객수 추이 (라인)
-    try:
-        top_cds = fact.groupby("movieCd")["audiAcc"].max().nlargest(5).index.tolist()
-        sub = fact[fact["movieCd"].isin(top_cds)].copy()
-        sub["name"] = sub["movieCd"].map(names).fillna(sub["movieCd"]).map(_short)
-        pivot = sub.pivot_table(index="date", columns="name", values="audiAcc").sort_index()
-        fig = go.Figure()
-        for col in pivot.columns:
-            fig.add_trace(
-                go.Scatter(
-                    x=pivot.index, y=pivot[col], mode="lines+markers", name=col, connectgaps=True
-                )
-            )
-        fig.update_layout(
-            title="누적 관객수 추이 (상위 5편)",
-            yaxis_title="누적 관객수(명)",
-            hovermode="x unified",
-            legend=dict(orientation="h", y=-0.2),
-            margin=dict(l=10, r=20, t=50, b=60),
-            height=420,
-        )
-        add("누적 관객수 추이", fig)
+        add("극값 일수", fig)
     except Exception as exc:  # pragma: no cover
-        print(f"추이 차트 생성 실패: {exc}")
-
-    # 3) 장르·국가 비중 (파이 2종)
-    try:
-        joined = fact.merge(
-            dim[["movieCd", "genre", "nation"]], on="movieCd", how="left"
-        )
-        joined["genre"] = joined["genre"].fillna("기타")
-        joined["nation"] = joined["nation"].fillna("기타")
-        g = _collapse(joined.groupby("genre")["audiCnt"].sum())
-        n = _collapse(joined.groupby("nation")["audiCnt"].sum())
-        fig = make_subplots(
-            rows=1, cols=2, specs=[[{"type": "domain"}, {"type": "domain"}]], subplot_titles=["장르", "국가"]
-        )
-        fig.add_trace(go.Pie(labels=g.index.tolist(), values=g.values.tolist(), hole=0.4), 1, 1)
-        fig.add_trace(go.Pie(labels=n.index.tolist(), values=n.values.tolist(), hole=0.4), 1, 2)
-        fig.update_layout(title="누적 관객수 비중", margin=dict(l=10, r=10, t=50, b=20), height=420)
-        add("장르·국가 비중", fig)
-    except Exception as exc:  # pragma: no cover
-        print(f"비중 차트 생성 실패: {exc}")
+        print(f"극값 차트 실패: {exc}")
 
     return charts
 
 
-def build_context(fact: pd.DataFrame, dim: pd.DataFrame) -> dict[str, Any]:
+def build_context(df: pd.DataFrame) -> dict[str, Any]:
     generated_at = datetime.now(KST).strftime("%Y-%m-%d %H:%M KST")
-    if fact.empty:
+    if df.empty:
         return {
-            "updated_at": "—",
-            "generated_at": generated_at,
-            "kpis": [],
-            "charts": [],
-            "empty": True,
+            "updated_at": "—", "generated_at": generated_at,
+            "kpis": [], "charts": [], "empty": True,
         }
-    latest = fact["date"].max()
-    snap = fact[fact["date"] == latest]
-    top1 = snap.sort_values("rank").iloc[0]
+    d = df.copy()
+    for c in ["t_max", "t_min", "t_mean", "precip"]:
+        d[c] = _safe_num(d[c])
+    latest = d["date"].max()
+    latest_row = d[d["date"] == latest].iloc[0]
+    days = (d["date"].max() - d["date"].min()).days + 1
     kpis = [
-        {"label": "최근 일자", "value": latest},
-        {"label": "최근 일자 총 관객수", "value": f"{int(snap['audiCnt'].sum()):,}명"},
-        {"label": "최근 일자 1위 영화", "value": _lookup_name(dim, top1["movieCd"])},
-        {"label": "집계 일수", "value": f"{fact['date'].nunique()}일"},
+        {"label": "최근 관측일", "value": latest.strftime("%Y-%m-%d")},
+        {"label": "최근 기온(최고/최저)", "value": f"{latest_row['t_max']:.1f} / {latest_row['t_min']:.1f}℃"},
+        {"label": "관측 기간", "value": f"{days}일"},
+        {"label": "관측기간 폭염일수", "value": f"{int((d['t_max'] >= HEATWAVE_C).sum())}일"},
     ]
     return {
-        "updated_at": latest,
+        "updated_at": latest.strftime("%Y-%m-%d"),
         "generated_at": generated_at,
         "kpis": kpis,
-        "charts": build_charts(fact, dim),
+        "charts": build_charts(d),
         "empty": False,
     }
 
@@ -309,62 +256,42 @@ def render(context: dict[str, Any], template_path: Path, out_path: Path) -> None
 
 
 # --------------------------------------------------------------------------- #
-# 실행 단위
+# 실행
 # --------------------------------------------------------------------------- #
-def run_one(target: date, fact_path: Path, dim_path: Path) -> None:
-    records = fetch.get_daily_box_office(_to_compact(target))
-    append_fact(fact_path, _to_iso(target), records)
-    ensure_movies(dim_path, [str(r["movieCd"]) for r in records])
-    print(f"{target}: 일일 {len(records)}건 저장 + 차원표 동기화 완료")
-
-
-def run_backfill(start: str, end: str, fact_path: Path, dim_path: Path) -> None:
-    d = _parse_compact(start)
-    end_d = _parse_compact(end)
-    if d > end_d:
-        raise SystemExit(f"START({start})가 END({end})보다 늦습니다.")
-    while d <= end_d:
-        try:
-            records = fetch.get_daily_box_office(_to_compact(d))
-            if records:
-                append_fact(fact_path, _to_iso(d), records)
-                ensure_movies(dim_path, [str(r["movieCd"]) for r in records])
-            print(f"{d}: {len(records)}건")
-        except Exception as exc:
-            print(f"{d} 실패: {exc}")
-        d += timedelta(days=1)
-        time.sleep(0.2)
+def refresh(path: Path, start: str, end: str) -> None:
+    daily = fetch.get_daily_weather(start, end)
+    rows = to_weather_rows(daily)
+    upsert_weather(path, rows)
+    print(f"수집: {start}~{end} → {len(rows)}일 upsert 완료")
 
 
 def main(argv: list[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(description="KOBIS 일일 박스오피스 시각화 파이프라인")
-    parser.add_argument("--date", help="특정 일자(YYYYMMDD). 생략 시 KST 어제")
+    parser = argparse.ArgumentParser(description="서울 일일 날씨 시각화 파이프라인")
+    parser.add_argument("--days", type=int, default=365, help="최근 N일 (기본 365)")
     parser.add_argument(
-        "--backfill",
-        nargs=2,
-        metavar=("START", "END"),
-        help="START~END(YYYYMMDD, 포함) 구간 백필",
+        "--backfill", nargs=2, metavar=("START", "END"),
+        help="START~END(YYYY-MM-DD, 포함) 구간 백필",
     )
     args = parser.parse_args(argv)
 
     root = Path(__file__).resolve().parent
-    fact_path = root / "data" / "boxoffice.csv"
-    dim_path = root / "data" / "movies.csv"
+    data_path = root / "data" / "weather.csv"
     template_path = root / "template.html"
     out_path = root / "index.html"
 
+    end = kst_yesterday()
     if args.backfill:
-        run_backfill(args.backfill[0], args.backfill[1], fact_path, dim_path)
+        start, end = args.backfill
     else:
-        target = _parse_compact(args.date) if args.date else kst_yesterday()
-        run_one(target, fact_path, dim_path)
+        start = _shift(end, -(args.days - 1))
 
-    fact = load_fact(fact_path)
-    dim = load_dim(dim_path)
-    context = build_context(fact, dim)
+    refresh(data_path, start, end)
+
+    df = load_weather(data_path)
+    context = build_context(df)
     render(context, template_path, out_path)
-    days = fact["date"].nunique() if not fact.empty else 0
-    print(f"완료: {out_path.name} 생성 (집계 일수 {days}일)")
+    days = (df["date"].max() - df["date"].min()).days + 1 if not df.empty else 0
+    print(f"완료: {out_path.name} 생성 (누적 {len(df)}일 / 기간 {days}일)")
 
 
 if __name__ == "__main__":
