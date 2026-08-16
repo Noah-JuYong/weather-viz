@@ -9,6 +9,7 @@ from pipeline import (
     CITIES,
     build_charts,
     build_context,
+    refresh_missing_history,
     to_weather_rows,
     upsert_weather,
 )
@@ -59,6 +60,59 @@ def test_upsert_idempotent_and_accumulates(tmp_path):
         "temperature_2m_mean": [22.5], "precipitation_sum": [1.0], "wind_speed_10m_max": [5.0],
     }))
     assert len(pipeline.load_weather(path)) == 4
+
+
+def test_refresh_missing_history_fetches_only_after_latest_date(tmp_path, monkeypatch):
+    path = tmp_path / "seoul.csv"
+    upsert_weather(path, to_weather_rows(sample_daily()))
+    calls = []
+
+    def fake_get_daily_weather(start, end, *, lat, lon):
+        calls.append((start, end, lat, lon))
+        return {
+            "time": ["2024-07-04"],
+            "temperature_2m_max": [27.0],
+            "temperature_2m_min": [18.0],
+            "temperature_2m_mean": [22.5],
+            "precipitation_sum": [1.0],
+            "wind_speed_10m_max": [5.0],
+        }
+
+    monkeypatch.setattr(pipeline.fetch, "get_daily_weather", fake_get_daily_weather)
+
+    refresh_missing_history(path, "2023-07-06", "2024-07-04", 37.5, 127.0)
+
+    assert calls == [("2024-07-04", "2024-07-04", 37.5, 127.0)]
+    assert pipeline.load_weather(path)["date"].max() == pd.Timestamp("2024-07-04")
+
+
+def test_main_backfill_refreshes_exact_requested_range(monkeypatch):
+    calls = []
+
+    def fake_refresh(path, start, end, lat, lon):
+        calls.append((path.name, start, end, lat, lon))
+
+    def fail_incremental(*args, **kwargs):
+        raise AssertionError("--backfill must not use incremental refresh")
+
+    monkeypatch.setattr(pipeline, "refresh_history", fake_refresh)
+    monkeypatch.setattr(pipeline, "refresh_missing_history", fail_incremental)
+    monkeypatch.setattr(
+        pipeline, "load_weather", lambda path: pd.DataFrame(columns=WEATHER_COLS)
+    )
+    monkeypatch.setattr(
+        pipeline, "forecast_df", lambda lat, lon, after=None: pd.DataFrame(columns=WEATHER_COLS)
+    )
+    monkeypatch.setattr(pipeline, "build_context", lambda hist, fc, city: {})
+    monkeypatch.setattr(pipeline, "render", lambda context, template_path, out_path: None)
+
+    pipeline.main(["--backfill", "2024-01-01", "2024-01-31"])
+
+    assert [(name, start, end) for name, start, end, _, _ in calls] == [
+        ("seoul.csv", "2024-01-01", "2024-01-31"),
+        ("busan.csv", "2024-01-01", "2024-01-31"),
+        ("jeju.csv", "2024-01-01", "2024-01-31"),
+    ]
 
 
 def test_build_charts_count_with_and_without_forecast():
