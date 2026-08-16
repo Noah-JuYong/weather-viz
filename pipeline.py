@@ -115,6 +115,18 @@ def refresh_history(path: Path, start: str, end: str, lat: float, lon: float) ->
     print(f"  관측: {start}~{end} → {len(daily['time'])}일 upsert")
 
 
+def refresh_missing_history(path: Path, start: str, end: str, lat: float, lon: float) -> None:
+    """기존 CSV의 마지막 관측일 이후 누락 구간만 수집한다."""
+    hist = load_weather(path)
+    if not hist.empty:
+        next_date = _shift(hist["date"].max().strftime("%Y-%m-%d"), 1)
+        start = max(start, next_date)
+    if start > end:
+        print(f"  관측: {end}까지 최신 (수집 생략)")
+        return
+    refresh_history(path, start, end, lat, lon)
+
+
 def forecast_df(lat: float, lon: float, *, after: str | None = None) -> pd.DataFrame:
     """단기 예보를 DataFrame으로 반환. ``after``(YYYY-MM-DD) 이후 날짜만 남긴다.
 
@@ -380,7 +392,10 @@ def main(argv: list[str] | None = None) -> None:
     for city in CITIES:
         print(f"[{city['name']}]")
         csv_path = data_dir / f"{city['slug']}.csv"
-        refresh_history(csv_path, start, end, city["lat"], city["lon"])
+        if args.backfill:
+            refresh_history(csv_path, start, end, city["lat"], city["lon"])
+        else:
+            refresh_missing_history(csv_path, start, end, city["lat"], city["lon"])
         hist = load_weather(csv_path)
         after = hist["date"].max().strftime("%Y-%m-%d") if not hist.empty else None
         try:

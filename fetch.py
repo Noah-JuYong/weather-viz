@@ -9,6 +9,7 @@ Open-Meteo는 **키/가입 없이 무료**이며 두 엔드포인트를 제공�
 """
 from __future__ import annotations
 
+import time
 from typing import Any
 
 import requests
@@ -31,9 +32,21 @@ class FetchError(RuntimeError):
     """Open-Meteo API 호출/응답 실패."""
 
 
+def _retry_delay(attempt: int) -> None:
+    """재시도 전 짧은 지수 백오프를 적용한다."""
+    time.sleep(2 ** (attempt - 1))
+
+
 def _get(url: str, params: dict[str, Any], session: requests.Session | None) -> dict[str, list[Any]]:
     sess = session or requests
-    resp = sess.get(url, params=params, timeout=30)
+    for attempt in range(1, 4):
+        try:
+            resp = sess.get(url, params=params, timeout=30)
+            break
+        except (requests.Timeout, requests.ConnectionError) as exc:
+            if attempt == 3:
+                raise FetchError(f"Open-Meteo 요청이 3회 실패했습니다 (url={url})") from exc
+            _retry_delay(attempt)
     resp.raise_for_status()
     payload = resp.json()
     daily = payload.get("daily") or {}
