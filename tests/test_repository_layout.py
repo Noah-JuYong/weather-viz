@@ -31,8 +31,12 @@ def test_daily_workflow_deploys_site_without_committing_generated_files():
     assert "git add -A" not in workflow
     assert "actions/configure-pages@v6" in workflow
     assert "actions/upload-pages-artifact@v5" in workflow
+    assert "path: site" in workflow
     assert "include-hidden-files: true" in workflow
     assert "actions/deploy-pages@v5" in workflow
+    assert "needs: update" in workflow
+    assert "name: github-pages" in workflow
+    assert "url: ${{ steps.deployment.outputs.page_url }}" in workflow
     assert "pages: write" in workflow
     assert "id-token: write" in workflow
 
