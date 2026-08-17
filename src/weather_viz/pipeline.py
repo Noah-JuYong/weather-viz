@@ -377,6 +377,18 @@ def _page_path(root: Path, slug: str) -> Path:
     return root / name
 
 
+def validate_project_paths(root: Path, template_path: Path) -> None:
+    """수집이나 쓰기를 시작하기 전에 체크아웃 경로를 검증한다."""
+    package_dir = root / "src" / "weather_viz"
+    if not (root / "pyproject.toml").is_file() or not package_dir.is_dir():
+        raise RuntimeError(
+            "weather-viz 저장소 루트를 찾지 못했습니다: "
+            f"{root} (저장소에서 editable 설치 후 실행하세요)"
+        )
+    if not template_path.is_file():
+        raise RuntimeError(f"리포트 템플릿을 찾지 못했습니다: {template_path}")
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="다도시 일일 날씨 시각화 파이프라인")
     parser.add_argument("--days", type=int, default=365, help="최근 N일 (기본 365)")
@@ -386,6 +398,7 @@ def main(argv: list[str] | None = None) -> None:
     root = PROJECT_ROOT
     data_dir = root / "data"
     template_path = TEMPLATE_PATH
+    validate_project_paths(root, template_path)
 
     end = kst_yesterday()
     if args.backfill:
