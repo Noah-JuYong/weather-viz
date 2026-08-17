@@ -3,8 +3,8 @@ import pandas as pd
 
 import pandas as pd
 
-import pipeline
-from pipeline import (
+from weather_viz import pipeline
+from weather_viz.pipeline import (
     WEATHER_COLS,
     CITIES,
     build_charts,

@@ -3,7 +3,7 @@
 import pytest
 import requests
 
-import fetch
+from weather_viz import fetch
 
 
 class FakeResponse:

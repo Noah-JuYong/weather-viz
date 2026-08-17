@@ -11,9 +11,9 @@
 데이터프레임 단위로 검증할 수 있도록 분리했다.
 
 실행:
-  python pipeline.py                  # 모든 도시, 최근 1년(어제 기준) 갱신
-  python pipeline.py --days 90        # 최근 90일
-  python pipeline.py --backfill 2025-01-01 2025-12-31
+  python -m weather_viz                  # 모든 도시, 최근 1년(어제 기준) 갱신
+  python -m weather_viz --days 90        # 최근 90일
+  python -m weather_viz --backfill 2025-01-01 2025-12-31
 """
 from __future__ import annotations
 
@@ -27,7 +27,11 @@ import plotly.graph_objects as go
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 from plotly.subplots import make_subplots
 
-import fetch
+from . import fetch
+
+PACKAGE_ROOT = Path(__file__).resolve().parent
+PROJECT_ROOT = PACKAGE_ROOT.parents[1]
+TEMPLATE_PATH = PACKAGE_ROOT / "templates" / "report.html"
 
 KST = timezone(timedelta(hours=9))
 
@@ -379,9 +383,9 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--backfill", nargs=2, metavar=("START", "END"), help="START~END(YYYY-MM-DD) 구간 백필")
     args = parser.parse_args(argv)
 
-    root = Path(__file__).resolve().parent
+    root = PROJECT_ROOT
     data_dir = root / "data"
-    template_path = root / "template.html"
+    template_path = TEMPLATE_PATH
 
     end = kst_yesterday()
     if args.backfill:
