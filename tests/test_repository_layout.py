@@ -35,3 +35,12 @@ def test_daily_workflow_deploys_site_without_committing_generated_files():
     assert "actions/deploy-pages@v5" in workflow
     assert "pages: write" in workflow
     assert "id-token: write" in workflow
+
+
+def test_generated_pages_and_internal_plans_are_not_tracked_at_root():
+    for name in ["index.html", "busan.html", "jeju.html", ".nojekyll"]:
+        assert not (ROOT / name).exists()
+
+    assert not (ROOT / "docs" / "superpowers").exists()
+    assert not (ROOT / "data" / ".gitkeep").exists()
+    assert (ROOT / "docs" / "architecture.md").is_file()
