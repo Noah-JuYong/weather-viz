@@ -27,30 +27,38 @@ Open-Meteo API → 수집(fetch) → 도시별 누적(data/<slug>.csv) → panda
 
 ```
 weather-viz/
-├── fetch.py                  # Open-Meteo Archive(관측) + Forecast(예보) 수집 (키 불필요)
-├── pipeline.py               # 도시별 누적(upsert) + 예보 통합 + 분석 + 렌더링 + CLI
-├── template.html             # Jinja 리포트 템플릿 (도시 탭 네비 포함)
-├── data/                     # <slug>.csv (서울/부산/제주, 자동 생성/커밋됨)
-├── tests/test_pipeline.py    # 저장/분석 로직 검증 (네트워크 없음)
+├── src/weather_viz/          # 애플리케이션 패키지
+│   ├── __main__.py           # `python -m weather_viz` 실행 진입점
+│   ├── fetch.py              # Open-Meteo 관측·예보 수집
+│   ├── pipeline.py           # 누적 저장·분석·렌더링·CLI
+│   └── templates/report.html # Jinja 리포트 템플릿
+├── tests/                    # 수집·파이프라인·CLI 테스트 (네트워크 없음)
+├── data/                     # 도시별 누적 CSV (자동 생성·커밋)
+├── index.html                # 서울 페이지 (GitHub Pages 진입점)
+├── busan.html / jeju.html    # 부산·제주 페이지
 ├── .github/workflows/daily.yml  # 매일 KST 09:00 실행 + 커밋
 ├── requirements.txt / requirements-dev.txt
-├── pyproject.toml            # pytest pythonpath 설정
+├── pyproject.toml            # 패키징·pytest 설정
 └── LICENSE                   # MIT
 ```
+
+Python 코드와 템플릿은 `src/weather_viz/`에 모았습니다. 반면 `data/`와 도시별 HTML은
+GitHub Pages가 별도 빌드 설정 없이 바로 배포할 수 있도록 저장소 루트에 유지합니다.
 
 ## 로컬 실행
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
-pip install -r requirements-dev.txt   # 테스트까지
+pip install -r requirements-dev.txt   # 런타임 + 테스트 의존성
+pip install --no-deps -e .            # weather_viz 패키지 연결
 
-python pipeline.py                    # 모든 도시, 최근 1년 갱신 (키/가입 불필요)
-python pipeline.py --days 90
-python pipeline.py --backfill 2025-01-01 2025-12-31
+python -m weather_viz                 # 모든 도시, 최근 1년 갱신 (키/가입 불필요)
+python -m weather_viz --days 90
+python -m weather_viz --backfill 2025-01-01 2025-12-31
 pytest
 ```
 
-> 도시를 추가/변경하려면 `pipeline.py` 의 `CITIES` 목록을 편집하세요.
+> 도시를 추가하거나 변경하려면 `src/weather_viz/pipeline.py`의 `CITIES` 목록을 편집하세요.
 
 ## 자동 배포
 

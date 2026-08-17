@@ -11,9 +11,9 @@
 데이터프레임 단위로 검증할 수 있도록 분리했다.
 
 실행:
-  python pipeline.py                  # 모든 도시, 최근 1년(어제 기준) 갱신
-  python pipeline.py --days 90        # 최근 90일
-  python pipeline.py --backfill 2025-01-01 2025-12-31
+  python -m weather_viz                  # 모든 도시, 최근 1년(어제 기준) 갱신
+  python -m weather_viz --days 90        # 최근 90일
+  python -m weather_viz --backfill 2025-01-01 2025-12-31
 """
 from __future__ import annotations
 
@@ -27,7 +27,11 @@ import plotly.graph_objects as go
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 from plotly.subplots import make_subplots
 
-import fetch
+from . import fetch
+
+PACKAGE_ROOT = Path(__file__).resolve().parent
+PROJECT_ROOT = PACKAGE_ROOT.parents[1]
+TEMPLATE_PATH = PACKAGE_ROOT / "templates" / "report.html"
 
 KST = timezone(timedelta(hours=9))
 
@@ -373,15 +377,28 @@ def _page_path(root: Path, slug: str) -> Path:
     return root / name
 
 
+def validate_project_paths(root: Path, template_path: Path) -> None:
+    """수집이나 쓰기를 시작하기 전에 체크아웃 경로를 검증한다."""
+    package_dir = root / "src" / "weather_viz"
+    if not (root / "pyproject.toml").is_file() or not package_dir.is_dir():
+        raise RuntimeError(
+            "weather-viz 저장소 루트를 찾지 못했습니다: "
+            f"{root} (저장소에서 editable 설치 후 실행하세요)"
+        )
+    if not template_path.is_file():
+        raise RuntimeError(f"리포트 템플릿을 찾지 못했습니다: {template_path}")
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="다도시 일일 날씨 시각화 파이프라인")
     parser.add_argument("--days", type=int, default=365, help="최근 N일 (기본 365)")
     parser.add_argument("--backfill", nargs=2, metavar=("START", "END"), help="START~END(YYYY-MM-DD) 구간 백필")
     args = parser.parse_args(argv)
 
-    root = Path(__file__).resolve().parent
+    root = PROJECT_ROOT
     data_dir = root / "data"
-    template_path = root / "template.html"
+    template_path = TEMPLATE_PATH
+    validate_project_paths(root, template_path)
 
     end = kst_yesterday()
     if args.backfill:

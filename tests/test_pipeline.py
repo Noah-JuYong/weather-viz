@@ -1,10 +1,11 @@
 """pipeline 분석/저장 로직 검증. 네트워크 없이 동작한다."""
-import pandas as pd
+from pathlib import Path
 
 import pandas as pd
+import pytest
 
-import pipeline
-from pipeline import (
+from weather_viz import pipeline
+from weather_viz.pipeline import (
     WEATHER_COLS,
     CITIES,
     build_charts,
@@ -15,6 +16,57 @@ from pipeline import (
 )
 
 SEOUL = next(c for c in CITIES if c["slug"] == "seoul")
+
+
+def test_project_paths_keep_generated_outputs_at_repository_root():
+    assert pipeline.PROJECT_ROOT == Path(__file__).resolve().parents[1]
+    assert pipeline.TEMPLATE_PATH == (
+        pipeline.PROJECT_ROOT
+        / "src"
+        / "weather_viz"
+        / "templates"
+        / "report.html"
+    )
+    assert pipeline._page_path(pipeline.PROJECT_ROOT, "seoul") == (
+        pipeline.PROJECT_ROOT / "index.html"
+    )
+    assert pipeline._page_path(pipeline.PROJECT_ROOT, "busan") == (
+        pipeline.PROJECT_ROOT / "busan.html"
+    )
+
+
+def test_main_fails_before_io_when_project_root_is_invalid(tmp_path, monkeypatch):
+    invalid_root = tmp_path / "not-a-checkout"
+    invalid_root.mkdir()
+    monkeypatch.setattr(pipeline, "PROJECT_ROOT", invalid_root)
+    monkeypatch.setattr(
+        pipeline, "TEMPLATE_PATH", invalid_root / "templates" / "report.html"
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "refresh_missing_history",
+        lambda *args, **kwargs: pytest.fail("경로 검증 전에 수집하면 안 됩니다"),
+    )
+
+    with pytest.raises(RuntimeError, match="저장소 루트"):
+        pipeline.main([])
+
+
+def test_main_fails_before_io_when_template_is_missing(tmp_path, monkeypatch):
+    package_dir = tmp_path / "src" / "weather_viz"
+    package_dir.mkdir(parents=True)
+    (tmp_path / "pyproject.toml").touch()
+    missing_template = package_dir / "templates" / "report.html"
+    monkeypatch.setattr(pipeline, "PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(pipeline, "TEMPLATE_PATH", missing_template)
+    monkeypatch.setattr(
+        pipeline,
+        "refresh_missing_history",
+        lambda *args, **kwargs: pytest.fail("경로 검증 전에 수집하면 안 됩니다"),
+    )
+
+    with pytest.raises(RuntimeError, match="템플릿"):
+        pipeline.main([])
 
 
 def sample_daily():
