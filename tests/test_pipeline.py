@@ -18,7 +18,7 @@ from weather_viz.pipeline import (
 SEOUL = next(c for c in CITIES if c["slug"] == "seoul")
 
 
-def test_project_paths_keep_generated_outputs_at_repository_root():
+def test_project_paths_separate_data_and_generated_site():
     assert pipeline.PROJECT_ROOT == Path(__file__).resolve().parents[1]
     assert pipeline.TEMPLATE_PATH == (
         pipeline.PROJECT_ROOT
@@ -27,12 +27,22 @@ def test_project_paths_keep_generated_outputs_at_repository_root():
         / "templates"
         / "report.html"
     )
-    assert pipeline._page_path(pipeline.PROJECT_ROOT, "seoul") == (
-        pipeline.PROJECT_ROOT / "index.html"
+    assert pipeline.SITE_DIR == pipeline.PROJECT_ROOT / "site"
+    assert pipeline._page_path(pipeline.SITE_DIR, "seoul") == (
+        pipeline.SITE_DIR / "index.html"
     )
-    assert pipeline._page_path(pipeline.PROJECT_ROOT, "busan") == (
-        pipeline.PROJECT_ROOT / "busan.html"
+    assert pipeline._page_path(pipeline.SITE_DIR, "busan") == (
+        pipeline.SITE_DIR / "busan.html"
     )
+
+
+def test_prepare_site_dir_creates_nojekyll(tmp_path):
+    site_dir = tmp_path / "site"
+
+    pipeline.prepare_site_dir(site_dir)
+
+    assert site_dir.is_dir()
+    assert (site_dir / ".nojekyll").read_text(encoding="utf-8") == ""
 
 
 def test_main_fails_before_io_when_project_root_is_invalid(tmp_path, monkeypatch):
@@ -138,7 +148,7 @@ def test_refresh_missing_history_fetches_only_after_latest_date(tmp_path, monkey
     assert pipeline.load_weather(path)["date"].max() == pd.Timestamp("2024-07-04")
 
 
-def test_main_backfill_refreshes_exact_requested_range(monkeypatch):
+def test_main_backfill_refreshes_exact_requested_range(tmp_path, monkeypatch):
     calls = []
 
     def fake_refresh(path, start, end, lat, lon):
@@ -148,6 +158,7 @@ def test_main_backfill_refreshes_exact_requested_range(monkeypatch):
         raise AssertionError("--backfill must not use incremental refresh")
 
     monkeypatch.setattr(pipeline, "refresh_history", fake_refresh)
+    monkeypatch.setattr(pipeline, "SITE_DIR", tmp_path / "site")
     monkeypatch.setattr(pipeline, "refresh_missing_history", fail_incremental)
     monkeypatch.setattr(
         pipeline, "load_weather", lambda path: pd.DataFrame(columns=WEATHER_COLS)
@@ -165,6 +176,36 @@ def test_main_backfill_refreshes_exact_requested_range(monkeypatch):
         ("busan.csv", "2024-01-01", "2024-01-31"),
         ("jeju.csv", "2024-01-01", "2024-01-31"),
     ]
+
+
+def test_main_renders_all_city_pages_into_site(tmp_path, monkeypatch):
+    site_dir = tmp_path / "site"
+    rendered = []
+    monkeypatch.setattr(pipeline, "SITE_DIR", site_dir)
+    monkeypatch.setattr(pipeline, "refresh_missing_history", lambda *args: None)
+    monkeypatch.setattr(
+        pipeline, "load_weather", lambda path: pd.DataFrame(columns=WEATHER_COLS)
+    )
+    monkeypatch.setattr(
+        pipeline,
+        "forecast_df",
+        lambda lat, lon, after=None: pd.DataFrame(columns=WEATHER_COLS),
+    )
+    monkeypatch.setattr(pipeline, "build_context", lambda hist, fc, city: {})
+    monkeypatch.setattr(
+        pipeline,
+        "render",
+        lambda context, template_path, out_path: rendered.append(out_path),
+    )
+
+    pipeline.main([])
+
+    assert rendered == [
+        site_dir / "index.html",
+        site_dir / "busan.html",
+        site_dir / "jeju.html",
+    ]
+    assert (site_dir / ".nojekyll").is_file()
 
 
 def test_build_charts_count_with_and_without_forecast():

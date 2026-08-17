@@ -32,6 +32,7 @@ from . import fetch
 PACKAGE_ROOT = Path(__file__).resolve().parent
 PROJECT_ROOT = PACKAGE_ROOT.parents[1]
 TEMPLATE_PATH = PACKAGE_ROOT / "templates" / "report.html"
+SITE_DIR = PROJECT_ROOT / "site"
 
 KST = timezone(timedelta(hours=9))
 
@@ -377,6 +378,11 @@ def _page_path(root: Path, slug: str) -> Path:
     return root / name
 
 
+def prepare_site_dir(site_dir: Path) -> None:
+    site_dir.mkdir(parents=True, exist_ok=True)
+    (site_dir / ".nojekyll").write_text("", encoding="utf-8")
+
+
 def validate_project_paths(root: Path, template_path: Path) -> None:
     """수집이나 쓰기를 시작하기 전에 체크아웃 경로를 검증한다."""
     package_dir = root / "src" / "weather_viz"
@@ -397,8 +403,10 @@ def main(argv: list[str] | None = None) -> None:
 
     root = PROJECT_ROOT
     data_dir = root / "data"
+    site_dir = SITE_DIR
     template_path = TEMPLATE_PATH
     validate_project_paths(root, template_path)
+    prepare_site_dir(site_dir)
 
     end = kst_yesterday()
     if args.backfill:
@@ -422,7 +430,7 @@ def main(argv: list[str] | None = None) -> None:
             print(f"  예보 수집 실패(건너뜀): {exc}")
             fc = pd.DataFrame(columns=WEATHER_COLS)
         ctx = build_context(hist, fc, city)
-        out = _page_path(root, city["slug"])
+        out = _page_path(site_dir, city["slug"])
         render(ctx, template_path, out)
         days = (hist["date"].max() - hist["date"].min()).days + 1 if not hist.empty else 0
         print(f"  → {out.name} (누적 {len(hist)}일 / 기간 {days}일)")
