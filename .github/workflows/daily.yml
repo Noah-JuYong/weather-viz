@@ -26,10 +26,12 @@ jobs:
           cache: pip
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: |
+          pip install -r requirements.txt
+          pip install --no-deps -e .
 
       - name: Fetch + analyze + render
-        run: python pipeline.py --days 365
+        run: python -m weather_viz --days 365
 
       - name: Commit & push changes
         run: |
