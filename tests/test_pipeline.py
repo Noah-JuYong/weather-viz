@@ -1,5 +1,5 @@
 """pipeline 분석/저장 로직 검증. 네트워크 없이 동작한다."""
-import pandas as pd
+from pathlib import Path
 
 import pandas as pd
 
@@ -15,6 +15,23 @@ from weather_viz.pipeline import (
 )
 
 SEOUL = next(c for c in CITIES if c["slug"] == "seoul")
+
+
+def test_project_paths_keep_generated_outputs_at_repository_root():
+    assert pipeline.PROJECT_ROOT == Path(__file__).resolve().parents[1]
+    assert pipeline.TEMPLATE_PATH == (
+        pipeline.PROJECT_ROOT
+        / "src"
+        / "weather_viz"
+        / "templates"
+        / "report.html"
+    )
+    assert pipeline._page_path(pipeline.PROJECT_ROOT, "seoul") == (
+        pipeline.PROJECT_ROOT / "index.html"
+    )
+    assert pipeline._page_path(pipeline.PROJECT_ROOT, "busan") == (
+        pipeline.PROJECT_ROOT / "busan.html"
+    )
 
 
 def sample_daily():
