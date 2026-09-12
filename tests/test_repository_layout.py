@@ -30,13 +30,19 @@ def test_daily_workflow_deploys_site_without_committing_generated_files():
     assert "git add data/*.csv" in workflow
     assert "git add -A" not in workflow
     assert "actions/configure-pages@v6" in workflow
+    assert "id: configure_pages" in workflow
+    assert "continue-on-error: true" in workflow
+    assert "id: configure_pages_retry" in workflow
+    assert "if: steps.configure_pages.outcome == 'failure'" in workflow
     assert "actions/upload-pages-artifact@v5" in workflow
     assert "path: site" in workflow
     assert "include-hidden-files: true" in workflow
     assert "actions/deploy-pages@v5" in workflow
     assert "needs: update" in workflow
     assert "name: github-pages" in workflow
-    assert "url: ${{ steps.deployment.outputs.page_url }}" in workflow
+    assert "url: ${{ steps.deployment.outputs.page_url || steps.deployment_retry.outputs.page_url }}" in workflow
+    assert "id: deployment_retry" in workflow
+    assert "if: steps.deployment.outcome == 'failure'" in workflow
     assert "pages: write" in workflow
     assert "id-token: write" in workflow
 

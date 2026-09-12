@@ -52,6 +52,13 @@ jobs:
           fi
 
       - name: Configure Pages
+        id: configure_pages
+        uses: actions/configure-pages@v6
+        continue-on-error: true
+
+      - name: Retry Configure Pages
+        id: configure_pages_retry
+        if: steps.configure_pages.outcome == 'failure'
         uses: actions/configure-pages@v6
 
       - name: Upload Pages artifact
@@ -65,8 +72,14 @@ jobs:
     runs-on: ubuntu-latest
     environment:
       name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
+      url: ${{ steps.deployment.outputs.page_url || steps.deployment_retry.outputs.page_url }}
     steps:
       - name: Deploy to GitHub Pages
         id: deployment
+        uses: actions/deploy-pages@v5
+        continue-on-error: true
+
+      - name: Retry GitHub Pages deployment
+        id: deployment_retry
+        if: steps.deployment.outcome == 'failure'
         uses: actions/deploy-pages@v5
